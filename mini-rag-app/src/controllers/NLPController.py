@@ -47,6 +47,12 @@ class NLPController(BaseController):
             json.dumps(collection_info, default=lambda x: x.__dict__)
         )
 
+    async def get_indexed_chunk_ids(self, project: Project) -> set:
+        if not hasattr(self.vectordb_client, "get_indexed_chunk_ids"):
+            return set()
+        collection_name = self.create_collection_name(project_id=project.project_id)
+        return await self.vectordb_client.get_indexed_chunk_ids(collection_name=collection_name)
+
     async def create_vector_db_index(self, project: Project):
         collection_name = self.create_collection_name(project_id=project.project_id)
         return await self.vectordb_client.create_vector_index(collection_name=collection_name)

@@ -1,13 +1,16 @@
 from fastapi import APIRouter, UploadFile, Depends, status, Request
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from celery.result import AsyncResult
+from celery_app import celery_app
+from tasks.file_processing import process_project_files
+from tasks.process_workflow import process_and_push_workflow
 from helpers.config import get_settings, Settings
 from controllers.DataController import DataController
 from controllers.ProjectController import ProjectController
-from controllers.ProcessingController import ProcessingController
 from models.ProjectModel import ProjectModel
-from models.ParentModel import ParentModel
 from models.AssetModel import AssetModel
-from models.dbschemas import DataChunk, Asset, Parent
+from models.dbschemas import Asset
 from models.enums.AssetTypeEnum import AssetTypeEnum
 from models import ResponseSignal
 from .scheams.data import processingRequest
@@ -71,100 +74,51 @@ async def upload_data(request: Request, project_id: int, file: UploadFile,
 
 
 @data_router.post("/process/{project_id}")
-async def process_data(request: Request, project_id: int,
-                       process_request: processingRequest):
+async def process_data(project_id: int, process_request: processingRequest):
 
-    project_model = await ProjectModel.create_instance(db_client=request.app.db_client)
-    project = await project_model.get_project_or_create_one(project_id=project_id)
-
-    asset_model = await AssetModel.create_instance(db_client=request.app.db_client)
-
-    project_files_ids = {}
-
-    if process_request.file_id:
-        asset_record = await asset_model.get_asset_record(
-            asset_project_id=project.project_id,
-            asset_name=process_request.file_id,
-        )
-
-        if asset_record is None:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                                content={"signal": ResponseSignal.FILE_ID_NOT_FOUND.value})
-
-        project_files_ids = {asset_record.asset_id: asset_record.asset_name}
-
-    else:
-        project_files = await asset_model.get_all_project_assets(
-            asset_project_id=project.project_id,
-            asset_type=AssetTypeEnum.FILE.value,
-        )
-
-        project_files_ids = {record.asset_id: record.asset_name for record in project_files}
-
-    if len(project_files_ids) == 0:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content={"signal": ResponseSignal.NO_FILES_ERROR.value})
-
-    processing_controller = ProcessingController(project_id=project_id)
-    parent_model = await ParentModel.create_instance(db_client=request.app.db_client)
-
-    if process_request.do_reset == 1:
-        _ = await parent_model.delete_parents_by_project_id(project_id=project.project_id)
-
-    no_parents = 0
-    no_records = 0
-    no_files = 0
-
-    for asset_id, file_id in project_files_ids.items():
-
-        parents = processing_controller.process_file(
-            file_id=file_id,
-            chunk_size=process_request.chunk_size,
-            chunk_overlap=process_request.overlap_size,
-        )
-
-        if parents is None or len(parents) == 0:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                                content={"signal": ResponseSignal.PROCESSING_FAILED.value})
-
-        parents_records = [
-            Parent(
-                parent_text=parent["text"],
-                parent_metadata=parent["metadata"],
-                parent_order=parent["order"],
-                parent_project_id=project.project_id,
-                parent_asset_id=asset_id,
-            )
-            for parent in parents
-        ]
-
-        chunk_order = 0
-        parents_chunks_records = []
-        for parent in parents:
-            parent_chunks = []
-            for child in parent["children"]:
-                chunk_order += 1
-                parent_chunks.append(DataChunk(
-                    chunk_text=child["text"],
-                    chunk_metadata=child["metadata"],
-                    chunk_order=chunk_order,
-                    chunk_project_id=project.project_id,
-                    chunk_asset_id=asset_id,
-                ))
-            parents_chunks_records.append(parent_chunks)
-
-        inserted_parents, inserted_chunks = await parent_model.insert_parents_with_chunks(
-            parents=parents_records,
-            parents_chunks=parents_chunks_records,
-        )
-
-        no_parents += inserted_parents
-        no_records += inserted_chunks
-        no_files += 1
+    task = process_project_files.delay(
+        project_id=project_id,
+        file_id=process_request.file_id,
+        chunk_size=process_request.chunk_size,
+        overlap_size=process_request.overlap_size,
+        do_reset=process_request.do_reset,
+    )
 
     return JSONResponse(content={
-        "signal": ResponseSignal.PROCESSING_SUCCESS.value,
-        "inserted_parents": no_parents,
-        "inserted_chunks": no_records,
-        "processed_files": no_files,
+        "signal": ResponseSignal.PROCESSING_QUEUED.value,
+        "task_id": task.id,
+    })
+
+
+@data_router.post("/process-and-push/{project_id}")
+async def process_and_push(project_id: int, process_request: processingRequest):
+
+    workflow_task = process_and_push_workflow.delay(
+        project_id=project_id,
+        file_id=process_request.file_id,
+        chunk_size=process_request.chunk_size,
+        overlap_size=process_request.overlap_size,
+        do_reset=process_request.do_reset,
+    )
+
+    return JSONResponse(content={
+        "signal": ResponseSignal.WORKFLOW_QUEUED.value,
+        "workflow_task_id": workflow_task.id,
+    })
+
+
+@data_router.get("/task/{task_id}")
+async def get_task_status(task_id: str):
+
+    result = AsyncResult(task_id, app=celery_app)
+    task_result = None
+
+    if result.ready():
+        task_result = result.result if result.successful() else {"error": str(result.result)}
+
+    return JSONResponse(content={
+        "signal": ResponseSignal.TASK_STATUS_RETRIEVED.value,
+        "task_id": task_id,
+        "status": result.status,
+        "result": jsonable_encoder(task_result),
     })

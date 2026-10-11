@@ -5,4 +5,5 @@ from models.dbschemas.minirag.schemes import (
     Parent,
     DataChunk,
     RetrievedDocument,
+    CeleryTaskExecution,
 )

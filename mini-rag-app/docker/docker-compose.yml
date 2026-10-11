@@ -14,6 +14,10 @@ services:
     depends_on:
       pgvector:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - ./env/.env.app
 
@@ -112,6 +116,110 @@ services:
       - backend
     restart: always
 
+  rabbitmq:
+    image: rabbitmq:4.1.2-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-minirag.conf:ro
+    env_file:
+      - ./env/.env.rabbitmq
+    networks:
+      - backend
+    restart: always
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:8.0.3-alpine
+    container_name: redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: docker/minirag/Dockerfile
+    container_name: celery-worker
+    volumes:
+      - fastapi_data:/app/assets
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+    env_file:
+      - ./env/.env.app
+    environment:
+      RUN_MIGRATIONS: "false"
+    networks:
+      - backend
+    restart: always
+    command: ["python", "-m", "celery", "-A", "celery_app", "worker",
+              "--queues=default,file_processing,data_indexing", "--loglevel=info"]
+
+  celery-beat:
+    build:
+      context: ..
+      dockerfile: docker/minirag/Dockerfile
+    container_name: celery-beat
+    volumes:
+      - celery_beat_data:/app/celerybeat
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./env/.env.app
+    environment:
+      RUN_MIGRATIONS: "false"
+    networks:
+      - backend
+    restart: always
+    command: ["python", "-m", "celery", "-A", "celery_app", "beat", "--loglevel=info",
+              "--schedule=/app/celerybeat/celerybeat-schedule"]
+
+  flower:
+    build:
+      context: ..
+      dockerfile: docker/minirag/Dockerfile
+    container_name: flower
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./env/.env.app
+    environment:
+      RUN_MIGRATIONS: "false"
+    networks:
+      - backend
+    restart: always
+    command: ["python", "-m", "celery", "-A", "celery_app", "flower", "--conf=flowerconfig.py"]
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
@@ -133,3 +241,6 @@ volumes:
   pgvector:
   prometheus_data:
   grafana_data:
+  rabbitmq_data:
+  redis_data:
+  celery_beat_data:

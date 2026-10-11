@@ -96,6 +96,14 @@ class PGVectorProvider(VectorDBInterface):
                 "indexes": indexes,
             }
 
+    async def get_indexed_chunk_ids(self, collection_name: str) -> set:
+        if not await self.is_collection_existed(collection_name=collection_name):
+            return set()
+        async with self.db_client() as session:
+            result = await session.execute(sql_text(
+                f"SELECT DISTINCT {PgVectorTableSchemeEnums.CHUNK_ID.value} FROM {collection_name}"))
+            return {row[0] for row in result.fetchall()}
+
     async def delete_collection(self, collection_name: str):
         async with self.db_client() as session:
             async with session.begin():

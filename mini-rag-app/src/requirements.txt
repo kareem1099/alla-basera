@@ -19,3 +19,8 @@ asyncpg==0.30.0
 alembic==1.14.0
 psycopg2-binary==2.9.10
 prometheus-client==0.21.1
+
+celery==5.5.3
+redis==6.2.0
+kombu==5.5.4
+flower==2.0.1
