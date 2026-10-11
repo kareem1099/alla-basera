@@ -25,6 +25,23 @@ jobs:
           git reset --hard "origin/$BRANCH"
           git log --oneline -1
 
+      - name: Prepare Celery env files
+        run: |
+          cd "$REPO_DIR/mini-rag-app/docker/env"
+          if [ ! -f .env.rabbitmq ]; then
+            umask 077
+            printf 'RABBITMQ_DEFAULT_USER="minirag"\nRABBITMQ_DEFAULT_PASS="%s"\n' "$(openssl rand -hex 24)" > .env.rabbitmq
+            echo "Created .env.rabbitmq"
+          fi
+          if ! grep -q '^CELERY_BROKER_URL=' .env.app; then
+            cp .env.app .env.app.bak-before-celery
+            RMQ_USER=$(sed -n 's/^RABBITMQ_DEFAULT_USER="\(.*\)"$/\1/p' .env.rabbitmq)
+            RMQ_PASS=$(sed -n 's/^RABBITMQ_DEFAULT_PASS="\(.*\)"$/\1/p' .env.rabbitmq)
+            printf '\nCELERY_BROKER_URL="amqp://%s:%s@rabbitmq:5672//"\nCELERY_RESULT_BACKEND="redis://redis:6379/0"\nCELERY_TASK_SERIALIZER="json"\nCELERY_TASK_TIME_LIMIT=600\nCELERY_INDEXING_TIME_LIMIT=1800\nCELERY_TASK_ACKS_LATE=true\nCELERY_WORKER_CONCURRENCY=2\nCELERY_FLOWER_PASSWORD="%s"\nCELERY_INDEXING_BATCH_DELAY=15\nCELERY_EXECUTIONS_RETENTION_SECONDS=86400\n' "$RMQ_USER" "$RMQ_PASS" "$(openssl rand -hex 16)" >> .env.app
+            echo "Added Celery settings to .env.app"
+          fi
+          grep -c '^CELERY_' .env.app
+
       - name: Rebuild and restart services
         run: |
           cd "$REPO_DIR/mini-rag-app/docker"
