@@ -21,6 +21,7 @@ FOOTER_PATTERNS = [
 
 CHAPTER_PREFIX = 'الفصل'
 TOC_TITLE = 'الفهرس'
+EMPTY_HEADING_MIN_CHARS = 40
 
 
 @dataclass
@@ -255,6 +256,11 @@ def parse_markdown_book(text: str, toc_start_page: Optional[int] = None,
             container = title
 
         if section["size"] == 0:
+            is_sentence = len(normalize(title)) >= EMPTY_HEADING_MIN_CHARS
+            if (is_sentence and parents and section["toc_idx"] is None
+                    and not section["is_chapter"] and not section["is_container"]):
+                parents[-1].lines.append((section["page"], title))
+                merged_into_previous.append((section["page"], title, parents[-1].title))
             continue
 
         if section["is_chapter"] or section["is_container"]:
